@@ -153,4 +153,54 @@ else
     fail "base.txt from lower/ is NOT visible through the mount"
 fi
 
+# ─────────────────────────────────────────────
+# TEST 2: Copy-on-Write
+# ─────────────────────────────────────────────
+
+section "TEST 2 — Copy-on-Write (CoW)"
+
+echo -e "  ${DIM}  What we're testing:${NC}"
+info "When we write to a lower-layer file through the mount,"
+info "the system must:"
+info "  1. Copy the file up to upper/ (CoW promotion)"
+info "  2. Apply the write to upper/ only"
+info "  3. Leave lower/ completely untouched"
+echo ""
+
+step "State of base.txt BEFORE write:"
+show_file_content "mnt/base.txt  (seen by user)" "$MOUNT_DIR/base.txt"
+show_file_content "upper/base.txt (upper layer)" "$UPPER_DIR/base.txt"
+show_file_content "lower/base.txt (lower layer)" "$LOWER_DIR/base.txt"
+
+echo ""
+step "Writing 'modified_content' to mnt/base.txt..."
+echo "modified_content" >> "$MOUNT_DIR/base.txt" 2>/dev/null
+info "Command: echo 'modified_content' >> mnt/base.txt"
+
+echo ""
+step "State of base.txt AFTER write:"
+show_file_content "mnt/base.txt  (seen by user)" "$MOUNT_DIR/base.txt"
+show_file_content "upper/base.txt (upper layer)" "$UPPER_DIR/base.txt"
+show_file_content "lower/base.txt (lower layer)" "$LOWER_DIR/base.txt"
+
+echo ""
+step "Checking results..."
+
+mnt_has_mod=$(grep -c "modified_content" "$MOUNT_DIR/base.txt" 2>/dev/null)
+upper_has_mod=$(grep -c "modified_content" "$UPPER_DIR/base.txt" 2>/dev/null)
+lower_has_mod=$(grep -c "modified_content" "$LOWER_DIR/base.txt" 2>/dev/null)
+
+info "mnt/base.txt   has 'modified_content': $mnt_has_mod  (want: 1)"
+info "upper/base.txt has 'modified_content': $upper_has_mod (want: 1)"
+info "lower/base.txt has 'modified_content': $lower_has_mod (want: 0)"
+
+echo ""
+if [ "$mnt_has_mod" -eq 1 ] && \
+   [ "$upper_has_mod" -eq 1 ] && \
+   [ "$lower_has_mod" -eq 0 ]; then
+    pass "CoW worked — upper/ modified, lower/ left untouched"
+else
+    fail "CoW failed — check upper/ and lower/ states above"
+fi
+
 
