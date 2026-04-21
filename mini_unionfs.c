@@ -248,7 +248,46 @@ static int unionfs_create(const char *path, mode_t mode,
     return 0;
 }
 
-
+static int unionfs_unlink(const char *path) {
+    char upper_path[512], lower_path[512];
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+    build_path(lower_path, UNIONFS_DATA->lower_dir, path);
+    int in_upper = (access(upper_path, F_OK) == 0);
+    int in_lower = (access(lower_path, F_OK) == 0);
+    if (in_upper) { if (unlink(upper_path) == -1) return -errno; }
+    if (in_lower) {
+        char wh_path[512];
+        build_whiteout_path(wh_path, UNIONFS_DATA->upper_dir, path);
+        FILE *fp = fopen(wh_path, "w");
+        if (!fp) return -errno;
+        fclose(fp);
+    }
+    return 0;
+}
+ 
+static int unionfs_mkdir(const char *path, mode_t mode) {
+    char full[512];
+    build_path(full, UNIONFS_DATA->upper_dir, path);
+    if (mkdir(full, mode) == -1) return -errno;
+    return 0;
+}
+ 
+static int unionfs_rmdir(const char *path) {
+    char upper_path[512], lower_path[512];
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+    build_path(lower_path, UNIONFS_DATA->lower_dir, path);
+    int in_upper = (access(upper_path, F_OK) == 0);
+    int in_lower = (access(lower_path, F_OK) == 0);
+    if (in_upper) { if (rmdir(upper_path) == -1) return -errno; }
+    if (in_lower) {
+        char wh_path[512];
+        build_whiteout_path(wh_path, UNIONFS_DATA->upper_dir, path);
+        FILE *fp = fopen(wh_path, "w");
+        if (!fp) return -errno;
+        fclose(fp);
+    }
+    return 0;
+}
 
 int main(int argc, char *argv[]) {
     if (argc < 4) {
