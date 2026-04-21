@@ -97,6 +97,102 @@ static void seen_add(SeenFiles *seen, const char *name) {
     }
 }
 
+int copy_to_upper(const char *path) {
+    char lower_path[512], upper_path[512];
+ 
+    // Build the real on-disk paths for both layers
+    build_path(lower_path, UNIONFS_DATA->lower_dir, path);
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+ 
+    // Open source file from lower layer (binary read)
+    FILE *src = fopen(lower_path, "rb");
+    if (!src)
+        return -errno;   // FIX #3: null check — was crashing here before
+ 
+    // Create destination file in upper layer (binary write)
+    FILE *dst = fopen(upper_path, "wb");
+    if (!dst) {
+        int err = errno;
+        fclose(src);     // FIX #3: close src before returning to avoid fd leak
+        return -err;
+    }
+ 
+    // Copy in 4096-byte chunks (efficient for any file size)
+    char tmp[4096];
+    size_t n;
+    int err = 0;
+ 
+    while ((n = fread(tmp, 1, sizeof(tmp), src)) > 0) {
+        if (fwrite(tmp, 1, n, dst) != n) {
+            err = -EIO;  // FIX #3: detect partial write failure
+            break;
+        }
+    }
+ 
+    fclose(src);
+    fclose(dst);
+    return err;   // 0 on success, -EIO on write failure
+}
+
+static int unionfs_write(const char *path, const char *buf,
+                         size_t size, off_t offset,
+                         struct fuse_file_info *fi) {
+    char upper_path[512];
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+ 
+    // If the file doesn't exist in upper yet → trigger Copy-on-Write
+    if (access(upper_path, F_OK) != 0) {
+        int res = copy_to_upper(path);
+        if (res < 0)
+            return res;
+    }
+ 
+    // Now write to the upper copy
+    int fd = open(upper_path, O_WRONLY);
+    if (fd == -1)
+        return -errno;
+ 
+    int res = pwrite(fd, buf, size, offset);
+    close(fd);
+ 
+    return res;   // returns number of bytes written, or -errno on error
+}
+
+static int unionfs_truncate(const char *path, off_t size,
+                            struct fuse_file_info *fi) {
+    char upper_path[512];
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+ 
+    // If file only exists in lower, promote it to upper first
+    if (access(upper_path, F_OK) != 0) {
+        int res = copy_to_upper(path);
+        if (res < 0)
+            return res;
+    }
+ 
+    // Truncate the upper copy to the requested size
+    // (size is usually 0 for overwrite-style redirects)
+    if (truncate(upper_path, size) == -1)
+        return -errno;
+ 
+    return 0;
+}
+
+static int unionfs_create(const char *path, mode_t mode,
+                          struct fuse_file_info *fi) {
+    char full[512];
+    build_path(full, UNIONFS_DATA->upper_dir, path);
+ 
+    int fd = creat(full, mode);
+    if (fd == -1)
+        return -errno;
+ 
+    close(fd);
+    return 0;
+}
+
+
+
 int main(int argc, char *argv[]) {
     if (argc < 4) {
         printf("Usage: %s <lower_dir> <upper_dir> <mount_point>\n", argv[0]);
