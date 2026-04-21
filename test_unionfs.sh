@@ -203,4 +203,91 @@ else
     fail "CoW failed — check upper/ and lower/ states above"
 fi
 
+# ─────────────────────────────────────────────
+# TEST 3: Whiteout Mechanism
+# ─────────────────────────────────────────────
+
+section "TEST 3 — Whiteout Mechanism (Deletions)"
+
+echo -e "  ${DIM}  What we're testing:${NC}"
+info "When we delete a file that lives in lower/ through the mount,"
+info "the system cannot physically delete it from lower/ (it's read-only)."
+info "Instead it must:"
+info "  1. Create a whiteout marker: upper/.wh.delete_me.txt"
+info "  2. Hide delete_me.txt from the user (ENOENT via mount)"
+info "  3. Keep lower/delete_me.txt intact on disk"
+echo ""
+
+step "State of delete_me.txt BEFORE deletion:"
+show_file_content "mnt/delete_me.txt  (seen by user)" "$MOUNT_DIR/delete_me.txt"
+show_file_content "lower/delete_me.txt (lower layer)" "$LOWER_DIR/delete_me.txt"
+if [ -f "$UPPER_DIR/.wh.delete_me.txt" ]; then
+    info "upper/.wh.delete_me.txt → EXISTS (unexpected before delete)"
+else
+    info "upper/.wh.delete_me.txt → does not exist (correct)"
+fi
+
+echo ""
+step "Deleting delete_me.txt through the mount..."
+rm "$MOUNT_DIR/delete_me.txt" 2>/dev/null
+info "Command: rm mnt/delete_me.txt"
+
+echo ""
+step "State AFTER deletion:"
+if [ -f "$MOUNT_DIR/delete_me.txt" ]; then
+    info "mnt/delete_me.txt   → STILL VISIBLE (bad!)"
+else
+    info "mnt/delete_me.txt   → hidden from user ✔"
+fi
+show_file_content "lower/delete_me.txt (must survive)" "$LOWER_DIR/delete_me.txt"
+if [ -f "$UPPER_DIR/.wh.delete_me.txt" ]; then
+    info "upper/.wh.delete_me.txt → EXISTS ✔  (whiteout created)"
+else
+    info "upper/.wh.delete_me.txt → MISSING (whiteout not created!)"
+fi
+
+echo ""
+step "Checking results..."
+if [ ! -f "$MOUNT_DIR/delete_me.txt" ] && \
+   [   -f "$LOWER_DIR/delete_me.txt" ] && \
+   [   -f "$UPPER_DIR/.wh.delete_me.txt" ]; then
+    pass "Whiteout created, file hidden from user, lower/ untouched"
+else
+    fail "Whiteout mechanism did not work correctly"
+fi
+
+
+# ─────────────────────────────────────────────
+# TEARDOWN
+# ─────────────────────────────────────────────
+
+section "TEARDOWN"
+
+step "Unmounting FUSE filesystem..."
+fusermount -u "$MOUNT_DIR" 2>/dev/null || umount "$MOUNT_DIR" 2>/dev/null
+info "Mount point released"
+
+step "Removing test directory..."
+rm -rf "$TEST_DIR"
+info "Cleaned: $TEST_DIR"
+
+
+# ─────────────────────────────────────────────
+# SUMMARY
+# ─────────────────────────────────────────────
+
+echo ""
+echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}║              FINAL RESULTS               ║${NC}"
+echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  Tests Passed : ${GREEN}${BOLD}$PASS${NC}"
+echo -e "  Tests Failed : ${RED}${BOLD}$FAIL${NC}"
+echo ""
+if [ "$FAIL" -eq 0 ]; then
+    echo -e "  ${GREEN}${BOLD}All tests passed. Mini-UnionFS is working correctly.${NC}"
+else
+    echo -e "  ${RED}${BOLD}Some tests failed. Review the output above.${NC}"
+fi
+echo ""
 
