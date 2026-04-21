@@ -120,3 +120,37 @@ info "Mount point: $MOUNT_DIR"
 echo ""
 step "State after mounting — what the user sees at mnt/:"
 show_dir_tree "mnt/  (unified view)" "$MOUNT_DIR"
+
+
+# ─────────────────────────────────────────────
+# TEST 1: Layer Visibility
+# ─────────────────────────────────────────────
+
+section "TEST 1 — Layer Visibility"
+
+echo -e "  ${DIM}  What we're testing:${NC}"
+info "Files from lower/ should be visible through the mount point."
+info "The unified view must show lower layer files even though"
+info "they physically only exist in lower/, not in upper/ or mnt/."
+echo ""
+
+step "Reading base.txt from the mount point..."
+mnt_content=$(cat "$MOUNT_DIR/base.txt" 2>/dev/null)
+info "mnt/base.txt content → \"$mnt_content\""
+
+step "Confirming file physically lives in lower/, NOT upper/..."
+show_file_content "lower/base.txt" "$LOWER_DIR/base.txt"
+if [ -f "$UPPER_DIR/base.txt" ]; then
+    info "upper/base.txt → EXISTS (unexpected at this stage)"r
+else
+    info "upper/base.txt → does not exist (correct — CoW not triggered yet)"
+fi
+
+echo ""
+if grep -q "base_only_content" "$MOUNT_DIR/base.txt" 2>/dev/null; then
+    pass "base.txt from lower/ is visible through the mount"
+else
+    fail "base.txt from lower/ is NOT visible through the mount"
+fi
+
+
