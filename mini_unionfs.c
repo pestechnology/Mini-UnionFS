@@ -1,0 +1,129 @@
+#define FUSE_USE_VERSION 31
+ 
+#include <stdlib.h>
+#include <fuse3/fuse.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <libgen.h>
+
+struct mini_unionfs_state {
+    char *lower_dir;   // read-only base layer  (e.g. Docker image)
+    char *upper_dir;   // read-write layer       (e.g. container layer)
+};
+
+#define UNIONFS_DATA ((struct mini_unionfs_state *) fuse_get_context()->private_data)
+
+void build_path(char *buf, const char *dir, const char *path) {
+    sprintf(buf, "%s%s", dir, path);
+}
+
+void build_whiteout_path(char *wh_path, const char *upper_dir, const char *path) {
+    char path_copy1[512], path_copy2[512];
+ 
+    strncpy(path_copy1, path, sizeof(path_copy1) - 1);
+    path_copy1[sizeof(path_copy1) - 1] = '\0';
+ 
+    strncpy(path_copy2, path, sizeof(path_copy2) - 1);
+    path_copy2[sizeof(path_copy2) - 1] = '\0';
+ 
+    char *dir_part  = dirname(path_copy1);   // e.g. "/subdir" or "/"
+    char *base_part = basename(path_copy2);  // e.g. "config.txt"
+ 
+    if (strcmp(dir_part, "/") == 0 || strcmp(dir_part, ".") == 0) {
+        // Top-level file → upper/.wh.filename
+        sprintf(wh_path, "%s/.wh.%s", upper_dir, base_part);
+    } else {
+        // Nested file → upper/subdir/.wh.filename
+        sprintf(wh_path, "%s%s/.wh.%s", upper_dir, dir_part, base_part);
+    }
+}
+
+int is_whiteout(const char *path) {
+    char wh_path[512];
+    build_whiteout_path(wh_path, UNIONFS_DATA->upper_dir, path);
+    return access(wh_path, F_OK) == 0;
+}
+
+int resolve_path(const char *path, char *resolved) {
+    char upper_path[512], lower_path[512];
+ 
+    // Step 1: whiteout check — logically deleted?
+    if (is_whiteout(path))
+        return -ENOENT;
+ 
+    // Step 2: upper layer takes priority
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+    if (access(upper_path, F_OK) == 0) {
+        strcpy(resolved, upper_path);
+        return 0;
+    }
+ 
+    // Step 3: fall back to lower layer
+    build_path(lower_path, UNIONFS_DATA->lower_dir, path);
+    if (access(lower_path, F_OK) == 0) {
+        strcpy(resolved, lower_path);
+        return 0;
+    }
+ 
+    // Step 4: not found anywhere
+    return -ENOENT;
+}
+
+#define MAX_FILES 1024
+ 
+typedef struct {
+    char names[MAX_FILES][256];
+    int  count;
+} SeenFiles;
+ 
+static int seen_contains(SeenFiles *seen, const char *name) {
+    for (int i = 0; i < seen->count; i++) {
+        if (strcmp(seen->names[i], name) == 0)
+            return 1;
+    }
+    return 0;
+}
+ 
+static void seen_add(SeenFiles *seen, const char *name) {
+    if (seen->count < MAX_FILES) {
+        strncpy(seen->names[seen->count], name, 255);
+        seen->names[seen->count][255] = '\0';
+        seen->count++;
+    }
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        printf("Usage: %s <lower_dir> <upper_dir> <mount_point>\n", argv[0]);
+        return 1;
+    }
+ 
+    struct mini_unionfs_state *state =
+        malloc(sizeof(struct mini_unionfs_state));
+    if (!state) {
+        fprintf(stderr, "Error: failed to allocate state\n");
+        return 1;
+    }
+ 
+    state->lower_dir = realpath(argv[1], NULL);
+    state->upper_dir = realpath(argv[2], NULL);
+ 
+    if (!state->lower_dir || !state->upper_dir) {
+        fprintf(stderr, "Error: invalid directory paths\n");
+        free(state);
+        return 1;
+    }
+ 
+    // FUSE only needs the program name and mount point.
+    // lower_dir and upper_dir are passed via state (private_data).
+    char *fuse_argv[2];
+    fuse_argv[0] = argv[0];
+    fuse_argv[1] = argv[3];
+ 
+    return fuse_main(2, fuse_argv, &unionfs_oper, state);
+}
