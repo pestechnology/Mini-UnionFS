@@ -97,6 +97,63 @@ static void seen_add(SeenFiles *seen, const char *name) {
     }
 }
 
+static int unionfs_getattr(const char *path, struct stat *stbuf,
+                           struct fuse_file_info *fi) {
+    char resolved[512];
+    int res = resolve_path(path, resolved);
+    if (res < 0) return res;
+    if (lstat(resolved, stbuf) == -1) return -errno;
+    return 0;
+}
+ 
+static int unionfs_readdir(const char *path, void *buf,
+                           fuse_fill_dir_t filler, off_t offset,
+                           struct fuse_file_info *fi,
+                           enum fuse_readdir_flags flags) {
+    DIR *dp; struct dirent *de; SeenFiles seen; seen.count = 0;
+    filler(buf, ".", NULL, 0, 0);
+    filler(buf, "..", NULL, 0, 0);
+    char upper_path[512], lower_path[512];
+    build_path(upper_path, UNIONFS_DATA->upper_dir, path);
+    build_path(lower_path, UNIONFS_DATA->lower_dir, path);
+    dp = opendir(upper_path);
+    if (dp) {
+        while ((de = readdir(dp)) != NULL) {
+            if (strcmp(de->d_name,".")==0 || strcmp(de->d_name,"..")==0) continue;
+            if (strncmp(de->d_name, ".wh.", 4) == 0) continue;
+            if (!seen_contains(&seen, de->d_name)) { filler(buf, de->d_name, NULL, 0, 0); seen_add(&seen, de->d_name); }
+        }
+        closedir(dp);
+    }
+    dp = opendir(lower_path);
+    if (dp) {
+        while ((de = readdir(dp)) != NULL) {
+            if (strcmp(de->d_name,".")==0 || strcmp(de->d_name,"..")==0) continue;
+            if (strncmp(de->d_name, ".wh.", 4) == 0) continue;
+            char virtual_path[512];
+            if (strcmp(path, "/") == 0) sprintf(virtual_path, "/%s", de->d_name);
+            else sprintf(virtual_path, "%s/%s", path, de->d_name);
+            if (is_whiteout(virtual_path)) continue;
+            if (seen_contains(&seen, de->d_name)) continue;
+            filler(buf, de->d_name, NULL, 0, 0); seen_add(&seen, de->d_name);
+        }
+        closedir(dp);
+    }
+    return 0;
+}
+ 
+static int unionfs_read(const char *path, char *buf, size_t size,
+                        off_t offset, struct fuse_file_info *fi) {
+    char resolved[512];
+    int res = resolve_path(path, resolved);
+    if (res < 0) return res;
+    int fd = open(resolved, O_RDONLY);
+    if (fd == -1) return -errno;
+    int ret = pread(fd, buf, size, offset);
+    close(fd);
+    return ret;
+}
+
 int copy_to_upper(const char *path) {
     char lower_path[512], upper_path[512];
  
